@@ -1,90 +1,248 @@
+"""Verwaltung der Personen: Laden und Speichern als CSV, JSON und XML."""
+from dataclasses import asdict
+from pathlib import Path
 import csv
 import json
-import os
 import xml.etree.ElementTree as ET
+
 from person import Person
 
-class PersonManager:
-    def __init__(self):
-        self.personen_liste = []
-        self.data_dir = os.path.join(os.path.dirname(__file__), "data")
-        os.makedirs(self.data_dir, exist_ok=True)
+# Trennzeichen beim SPEICHERN von CSV (";" öffnet sich in deutschem Excel sauber).
+# Beim LADEN wird das Trennzeichen automatisch erkannt (; , oder Tab).
+CSV_DELIMITER = ";"
 
-    def person_hinzufuegen(self, name, alter, adresse):
-        person = Person(name, alter, adresse)
-        self.personen_liste.append(person)
-        print(f"{name} wurde vorübergehend im Speicher abgelegt.")
+FIELDS = ["name", "age", "email"]
 
-    def save_to_csv(self):
-        if not self.personen_liste:
-            print("Keine Personen im Arbeitsspeicher zum Speichern vorhanden.")
-            return
+# Akzeptierte Spaltennamen je Feld (klein geschrieben).
+# Dadurch werden auch ältere Dateien wie "Name;Alter;Adresse" gelesen.
+FIELD_ALIASES = {
+    "name": ("name",),
+    "age": ("age", "alter"),
+    "email": ("email", "e-mail", "mail", "adresse"),
+}
 
-        file_path = os.path.join(self.data_dir, "personen.csv")
-        datei_existiert = os.path.exists(file_path)
 
-        with open(file_path, "a", newline="", encoding="utf-8") as file:
-            writer = csv.writer(file, delimiter=";")
-            if not datei_existiert:
-                writer.writerow(["Name", "Alter", "Adresse"])
-            for p in self.personen_liste:
-                writer.writerow([p.name, p.alter, p.adresse])
+# ---------------------------------------------------------------------------
+# Hilfsfunktionen
+# ---------------------------------------------------------------------------
+def person_from_dict(data: dict) -> Person:
+    """Baut eine Person aus einem Dict (Groß-/Kleinschreibung egal, alte Namen erlaubt)."""
+    data = {str(key).strip().lower(): value for key, value in data.items() if key is not None}
 
-        print(f"{len(self.personen_liste)} Person(en) erfolgreich in data/personen.csv gespeichert.")
-        self.personen_liste.clear()
-
-    def save_to_xml(self):
-        if not self.personen_liste:
-            print("Keine Personen im Arbeitsspeicher zum Speichern vorhanden.")
-            return
-
-        file_path = os.path.join(self.data_dir, "personen.xml")
-        datei_existiert = os.path.exists(file_path)
-
-        if datei_existiert:
-            try:
-                tree = ET.parse(file_path)
-                root = tree.getroot()
-            except ET.ParseError:
-                root = ET.Element("personen")
-                tree = ET.ElementTree(root)
+    values = {}
+    for field, aliases in FIELD_ALIASES.items():
+        for alias in aliases:
+            if data.get(alias) is not None:
+                values[field] = str(data[alias]).strip()
+                break
         else:
-            root = ET.Element("personen")
-            tree = ET.ElementTree(root)
+            raise ValueError(f"Feld '{field}' fehlt (erwartet: {' / '.join(aliases)})")
 
-        for p in self.personen_liste:
-            person_elem = ET.SubElement(root, "person")
-            ET.SubElement(person_elem, "name").text = str(p.name)
-            ET.SubElement(person_elem, "alter").text = str(p.alter)
-            ET.SubElement(person_elem, "adresse").text = str(p.adresse)
+    try:
+        age = int(values["age"])
+    except ValueError:
+        raise ValueError(f"Alter '{values['age']}' ist keine ganze Zahl") from None
 
-        ET.indent(tree, space="    ")
-        with open(file_path, "wb") as file:
-            tree.write(file, encoding="utf-8", xml_declaration=True)
+    return Person(values["name"], age, values["email"])
 
-        print(f"{len(self.personen_liste)} Person(en) erfolgreich in data/personen.xml gespeichert.")
-        self.personen_liste.clear()
 
-    def save_to_json(self):
-        if not self.personen_liste:
-            print("Keine Personen im Arbeitsspeicher zum Speichern vorhanden.")
-            return
+def person_key(person: Person) -> tuple:
+    """Schlüssel zum Erkennen von Duplikaten (ohne Groß-/Kleinschreibung)."""
+    return (person.name.strip().lower(), str(person.age).strip(), person.email.strip().lower())
 
-        file_path = os.path.join(self.data_dir, "personen.json")
-        bisherige_daten = []
 
-        if os.path.exists(file_path):
+def _write_atomic(path: Path, writer) -> None:
+    """Schreibt erst in eine temporäre Datei und ersetzt dann die echte Datei.
+    So bleibt die alte Datei heil, falls beim Schreiben etwas schiefgeht."""
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        writer(tmp_path)
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Lesen / Schreiben je Format
+# ---------------------------------------------------------------------------
+def _read_csv(path: Path) -> list:
+    with path.open("r", newline="", encoding="utf-8-sig") as file:
+        first_line = file.readline()
+        file.seek(0)
+        delimiter = max(";,\t", key=first_line.count)  # häufigstes Trennzeichen der Kopfzeile
+        reader = csv.DictReader(file, delimiter=delimiter)
+
+        persons = []
+        for line_no, row in enumerate(reader, start=2):
+            if not any(value for value in row.values() if value):
+                continue  # leere Zeile
             try:
-                with open(file_path, "r", encoding="utf-8") as file:
-                    bisherige_daten = json.load(file)
-            except json.JSONDecodeError:
-                bisherige_daten = []
+                persons.append(person_from_dict(row))
+            except ValueError as error:
+                raise ValueError(f"Zeile {line_no}: {error}") from None
+    return persons
 
-        neue_daten = [p.to_dict() for p in self.personen_liste]
-        bisherige_daten.extend(neue_daten)
 
-        with open(file_path, "w", encoding="utf-8") as file:
-            json.dump(bisherige_daten, file, indent=4, ensure_ascii=False)
+def _write_csv(path: Path, persons: list) -> None:
+    # utf-8-sig: Excel erkennt Umlaute damit korrekt
+    with path.open("w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=FIELDS, delimiter=CSV_DELIMITER)
+        writer.writeheader()
+        for person in persons:
+            writer.writerow(asdict(person))
 
-        print(f"{len(self.personen_liste)} Person(en) erfolgreich in data/personen.json gespeichert.")
-        self.personen_liste.clear()
+
+def _read_json(path: Path) -> list:
+    with path.open("r", encoding="utf-8-sig") as file:
+        data = json.load(file)
+
+    if not isinstance(data, list):
+        raise ValueError("Die Datei muss eine Liste von Personen enthalten.")
+
+    persons = []
+    for index, item in enumerate(data, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Eintrag {index} ist kein Objekt.")
+        try:
+            persons.append(person_from_dict(item))
+        except ValueError as error:
+            raise ValueError(f"Eintrag {index}: {error}") from None
+    return persons
+
+
+def _write_json(path: Path, persons: list) -> None:
+    with path.open("w", encoding="utf-8") as file:
+        json.dump([asdict(person) for person in persons], file, indent=4, ensure_ascii=False)
+
+
+def _read_xml(path: Path) -> list:
+    root = ET.parse(path).getroot()
+
+    persons = []
+    for index, element in enumerate(root.findall("person"), start=1):
+        data = {child.tag: (child.text or "") for child in element}
+        try:
+            persons.append(person_from_dict(data))
+        except ValueError as error:
+            raise ValueError(f"Person {index}: {error}") from None
+    return persons
+
+
+def _write_xml(path: Path, persons: list) -> None:
+    root = ET.Element("persons")
+    for person in persons:
+        element = ET.SubElement(root, "person")
+        ET.SubElement(element, "name").text = person.name
+        ET.SubElement(element, "age").text = str(person.age)
+        ET.SubElement(element, "email").text = person.email
+
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space="    ")
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+
+
+# Format -> (Anzeigename, Lesefunktion, Schreibfunktion)
+FORMATS = {
+    "csv": ("CSV", _read_csv, _write_csv),
+    "json": ("JSON", _read_json, _write_json),
+    "xml": ("XML", _read_xml, _write_xml),
+}
+
+# Fehler, die beim Lesen einer Datei auftreten können
+READ_ERRORS = (OSError, ValueError, ET.ParseError)  # JSONDecodeError und UnicodeDecodeError sind ValueErrors
+
+
+# ---------------------------------------------------------------------------
+# Manager
+# ---------------------------------------------------------------------------
+class PersonManager:
+    def __init__(self) -> None:
+        self.persons = []
+        self.base_dir = Path(__file__).resolve().parent
+        self.data_dir = self.base_dir / "data"
+        self.data_dir.mkdir(exist_ok=True)
+
+    def path_for(self, filename: str) -> Path:
+        """Dateien liegen immer im data-Ordner (Pfadanteile im Namen werden ignoriert)."""
+        return self.data_dir / Path(filename).name
+
+    def add_person_obj(self, name: str, age: int, email: str) -> bool:
+        """Fügt eine Person hinzu. Gibt False zurück, wenn es sie schon gibt."""
+        person = Person(name, age, email)
+        if person_key(person) in {person_key(p) for p in self.persons}:
+            return False
+        self.persons.append(person)
+        return True
+
+    # --- allgemeine Funktionen ------------------------------------------------
+    def load(self, fmt: str, filename: str = None):
+        """Ersetzt self.persons durch den Dateiinhalt. Bei Fehlern bleibt alles unverändert."""
+        label, reader, _ = FORMATS[fmt]
+        path = self.path_for(filename or f"persons.{fmt}")
+        if not path.exists():
+            return False, f"Datei '{path.name}' existiert nicht."
+        try:
+            persons = reader(path)
+        except READ_ERRORS as error:
+            return False, f"{label} Ladefehler in '{path.name}': {error}"
+        self.persons = persons
+        return True, f"{len(persons)} Person(en) aus {label} geladen."
+
+    def save(self, fmt: str, filename: str = None):
+        """Schreibt self.persons komplett in die Datei (überschreibt sie)."""
+        label, _, writer = FORMATS[fmt]
+        path = self.path_for(filename or f"persons.{fmt}")
+        try:
+            _write_atomic(path, lambda tmp: writer(tmp, self.persons))
+        except OSError as error:
+            return False, f"{label}-Fehler: {error}"
+        return True, f"{label} gespeichert: {path.name}"
+
+    def add_to_file(self, fmt: str, filename: str, new_persons: list):
+        """Liest die bestehende Datei, hängt die neuen Personen an (ohne Duplikate)
+        und schreibt alles zurück. Danach entspricht self.persons dem Dateiinhalt."""
+        label, reader, writer = FORMATS[fmt]
+        path = self.path_for(filename or f"persons.{fmt}")
+
+        merged = []
+        if path.exists() and path.stat().st_size > 0:
+            try:
+                merged = reader(path)
+            except READ_ERRORS as error:
+                return False, (f"{label}: Die bestehende Datei '{path.name}' konnte nicht gelesen "
+                               f"werden. Es wurde nichts überschrieben.\n\n{error}")
+
+        known = {person_key(p) for p in merged}
+        added = 0
+        for person in new_persons:
+            if person_key(person) not in known:
+                merged.append(person)
+                known.add(person_key(person))
+                added += 1
+
+        try:
+            _write_atomic(path, lambda tmp: writer(tmp, merged))
+        except OSError as error:
+            return False, f"{label}-Fehler: {error}"
+
+        self.persons = merged
+        return True, f"{label} gespeichert: {path.name}\n{added} neue Person(en), insgesamt {len(merged)}."
+
+    # --- einfache Kurzformen (wie bisher) ------------------------------------
+    def save_csv(self, filename="persons.csv"):
+        return self.save("csv", filename)
+
+    def save_json(self, filename="persons.json"):
+        return self.save("json", filename)
+
+    def save_xml(self, filename="persons.xml"):
+        return self.save("xml", filename)
+
+    def load_csv(self, filename="persons.csv"):
+        return self.load("csv", filename)
+
+    def load_json(self, filename="persons.json"):
+        return self.load("json", filename)
+
+    def load_xml(self, filename="persons.xml"):
+        return self.load("xml", filename)

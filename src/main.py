@@ -1,45 +1,54 @@
-import sys
+import argparse
 from manager import PersonManager
+from person import Person
 
-manager = PersonManager()
+def main():
+    parser = argparse.ArgumentParser(description="Person Management Application")
+    parser.add_argument("-c", "--csv", metavar="FILENAME", help="CSV Dateiname")
+    parser.add_argument("-a", "--add", nargs=3, metavar=("NAME", "AGE", "EMAIL"), help="Person hinzufügen")
+    args = parser.parse_args()
 
-def person_eingeben():
-    print("Neue Person hinzufügen")
-    name = input("Name: ").strip()
-    alter = input("Alter: ").strip()
-    adresse = input("Adresse: ").strip()
-    manager.person_hinzufuegen(name, alter, adresse)
+    manager = PersonManager()
 
-def menu():
+    if args.add:
+        if not args.csv:
+            parser.error("-a erfordert -c FILENAME")
+        name, age, email = args.add
+        person = Person(name, int(age), email)
+        manager.persons.append(person)
+        manager.save_csv(args.csv)
+        print(f"Person '{name}' erfolgreich hinzugefügt und in {args.csv} gespeichert.")
+        return
+
     while True:
-        print("PERSONEN VERWALTUNG")
-        print("1. Add person")
+        print("\n-------------------")
+        print("    Persons Manager")
+        print("-------------------")
+        print("1. Add Person")
         print("2. Save to CSV")
         print("3. Save to XML")
         print("4. Save to JSON")
-        print("5. Exit")
-        wahl = input("Wahl (1-5): ").strip()
+        print("5. Show Persons")
+        print("6. Exit")
 
-        if wahl == "1":
-            person_eingeben()
-        elif wahl == "2":
-            manager.save_to_csv()
-        elif wahl == "3":
-            manager.save_to_xml()
-        elif wahl == "4":
-            manager.save_to_json()
-        elif wahl == "5":
-            print("Programm beendet.")
-            sys.exit(0)
-        else:
-            print("Ungültige Eingabe, bitte 1-5 wählen.")
+        choice = input("\nOption wählen: ").strip()
+
+        match choice:
+            case "1":
+                manager.add_person()
+            case "2":
+                manager.save_csv()
+            case "3":
+                manager.save_xml()
+            case "4":
+                manager.save_json()
+            case "5":
+                manager.show_persons()
+            case "6":
+                print("\nProgramm beendet.")
+                break
+            case _:
+                print("\nOption nicht erlaubt.")
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 5 and sys.argv[1] == "-a":
-        cli_name = sys.argv[2]
-        cli_alter = sys.argv[3]
-        cli_adresse = sys.argv[4]
-        manager.person_hinzufuegen(cli_name, cli_alter, cli_adresse)
-        menu()
-    else:
-        menu()
+    main()

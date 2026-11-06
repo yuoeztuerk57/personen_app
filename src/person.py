@@ -1,12 +1,7 @@
-class Person:
-    def __init__(self, name, alter, adresse):
-        self.name = name
-        self.alter = alter
-        self.adresse = adresse
+from dataclasses import dataclass
 
-    def to_dict(self):
-        return {
-            "name": self.name,
-            "alter": self.alter,
-            "adresse": self.adresse
-        }
+@dataclass
+class Person:
+    name: str
+    age: int
+    email: str
